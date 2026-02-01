@@ -1,193 +1,157 @@
 import streamlit as st
 import google.generativeai as genai
-import os
-from datetime import datetime
+from PIL import Image
 
 # ==========================================
-# 1. 設定與樣式 (仿造原本的木質與紙張風格)
+# 1. 系統設定與樣式 (還原木質風格)
 # ==========================================
-st.set_page_config(
-    page_title="文心老師作文批閱",
-    page_icon="🪶",
-    layout="centered"
-)
+st.set_page_config(page_title="文心老師作文批閱", page_icon="🪶", layout="centered")
 
-# 自訂 CSS 樣式 (移植原本的 Tailwind 色調)
+# ⚠️⚠️⚠️ 請在此填入你的 API KEY ⚠️⚠️⚠️
+API_KEY = "這裡貼上你的_API_KEY" 
+
+# 設定 API
+try:
+    genai.configure(api_key=API_KEY)
+except:
+    st.error("API Key 設定有誤，請檢查程式碼第 11 行。")
+
+# 注入 CSS 樣式 (仿造你的 React Tailwind 風格)
 st.markdown("""
 <style>
-    /* 背景色 */
+    /* 全站背景 */
     .stApp {
         background-color: #EFEBE9;
         background-image: radial-gradient(#D7CCC8 1px, transparent 1px);
         background-size: 20px 20px;
     }
-    /* 標題字體 */
-    h1, h2, h3 {
-        color: #5D4037 !important;
+    /* 字體顏色 */
+    h1, h2, h3, p, div, span, label {
+        color: #3E2723 !important;
         font-family: "Noto Serif TC", serif;
     }
-    /* 按鈕樣式 (木紋風格) */
-    .stButton>button {
+    /* 按鈕樣式 (仿木紋) */
+    div.stButton > button {
         background: linear-gradient(to bottom, #6D4C41, #4E342E);
         color: #FFECB3 !important;
         border: 2px solid #3E2723;
         border-radius: 8px;
+        font-size: 16px;
         font-weight: bold;
+        box-shadow: 0 4px 0 #271c19;
+        transition: all 0.2s;
         width: 100%;
+        margin-top: 10px;
     }
-    .stButton>button:hover {
-        filter: brightness(1.1);
+    div.stButton > button:active {
+        transform: translateY(2px);
+        box-shadow: none;
     }
-    /* 區塊樣式 */
-    .paper-card {
+    /* 次要按鈕 (返回鍵) */
+    .secondary-btn > button {
+        background: #FAF9F6;
+        color: #5D4037 !important;
+        border: 2px solid #A1887F;
+    }
+    /* 卡片區塊 */
+    .wood-card {
         background-color: #FAF9F6;
-        padding: 20px;
-        border-radius: 10px;
+        padding: 25px;
+        border-radius: 12px;
         border: 2px solid #D7CCC8;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         margin-bottom: 20px;
     }
-    .feedback-box {
-        background-color: #FAF9F6;
-        padding: 25px;
-        border-radius: 8px;
-        border-left: 5px solid #8D6E63;
-        font-family: "Noto Serif TC", serif;
-        line-height: 1.8;
+    /* 墨水顯示 */
+    [data-testid="stMetricValue"] {
+        color: #D84315 !important;
+        font-family: monospace;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 系統邏輯與 API 設定
+# 2. 核心 Prompt (從你的 React 程式碼原樣搬運)
 # ==========================================
 
-# ⚠️ 請在此填入你的 Gemini API Key，或是從 Streamlit Secrets 讀取
-# 建議之後設定在 Streamlit Cloud 的 Secrets 裡，這裡先用變數示範
-# 如果你有設定 secrets，請改用 st.secrets["GEMINI_API_KEY"]
-API_KEY = "AIzaSyDULJDZicXPlA9g_5Hoj0oYv9XPhUuK3LA" 
-
-try:
-    genai.configure(api_key=API_KEY)
-except:
-    st.error("請確認 API Key 是否正確設定。")
-
-# 積分系統設定
-MAX_CREDITS = 10
-REFILL_PASSWORD = "anxux123"
-
-# 初始化 Session State (記憶體)
-if 'credits' not in st.session_state:
-    st.session_state.credits = MAX_CREDITS
-if 'page' not in st.session_state:
-    st.session_state.page = 'home'
-if 'result' not in st.session_state:
-    st.session_state.result = None
-
-# ==========================================
-# 3. Prompt (提示詞) 設定 - 核心靈魂
-# ==========================================
-
-BODHISATTVA_PROMPT = """
+BODHISATTVA_INSTRUCTION = """
 你是一位慈悲為懷、溫柔敦厚的資深國文老師「文心菩薩」。
 收到內容後，請先執行【有效性檢查】：
 1. 這是否是一篇學生的作文？
-2. 如果內容無效（如亂碼、網址、無意義文字），請回傳 `[REJECT]` 開頭的訊息。
+2. 如果內容僅是「網址連結」、「一句話的題目」、「亂碼」、「非作文的說明文字」或「極短的無意義語句」，請直接退件。
+
+【退件處理】：
+若判定無效，請回傳以 `[REJECT]` 開頭的訊息。
+語氣要求：溫柔婉轉，說明這看起來不像作文，請孩子重新上傳。並告知這次不扣墨水。
 
 【正常批閱】：
 若內容有效，請從內容、結構、修辭三個維度分析。
-輸出使用 Markdown 格式，包含：
-### 🌸 總體評分
-### ✨ 亮點讚賞
-### 💡 名師建議 (不少於100字，語氣溫柔婉轉)
-### 📖 推薦詞句
+輸出必須包含：【總體評分】、【亮點讚賞】、【名師建議】(不少於100字)、【推薦詞句】。
 
-風格：如春風般溫柔，多給予鼓勵。使用繁體中文。
+風格與規範：
+1. **嚴禁無中生有**：絕對不能評論文章中「不存在」的情節或優點。
+2. 語氣要如同春風般溫柔，多給予鼓勵與肯定。
+3. 即使有缺點，也要用委婉的方式提出建議。
+4. 使用繁體中文。
 """
 
-VAJRA_PROMPT = """
+VAJRA_INSTRUCTION = """
 你是一位嚴格苛刻、目光如炬的資深國文總編輯「怒目金剛」。
 收到內容後，請先執行【有效性檢查】：
 1. 這是否是一篇值得批閱的作文？
-2. 如果內容無效，請回傳 `[REJECT]` 開頭的訊息並嚴厲斥責。
+2. 如果內容僅是「網址連結」、「一句話的題目」、「亂碼」、「非作文的說明文字」或「極短的無意義語句」，請直接退件。
+
+【退件處理】：
+若判定無效，請回傳以 `[REJECT]` 開頭的訊息。
+語氣要求：嚴厲斥責，大罵這是敷衍了事，要求重寫。並告知這次「暫且」不扣墨水。
 
 【正常批閱】：
 若內容有效，請從內容、結構、修辭三個維度分析。
-輸出使用 Markdown 格式，包含：
-### 🔥 總體評分
-### ⚡ 毒舌點評 (直指核心問題)
-### 🔨 嚴格建議 (不少於100字，不留情面)
-### 🚀 改進方向
+輸出必須包含：【總體評分】、【毒舌點評】、【嚴格建議】(不少於100字)、【改進方向】。
 
-風格：嚴厲、直接、高標準，雞蛋裡挑骨頭。使用繁體中文。
+風格與規範：
+1. **嚴禁無中生有**：若文章內容空洞，就直接罵它空洞。
+2. 語氣要嚴厲、直接，不留情面，極盡刁難。
+3. 專注於找出邏輯漏洞、用詞不當、結構鬆散之處。
+4. 使用繁體中文。
 """
 
-MODEL_ESSAY_PROMPT = """
-你是一位榮獲文學獎的資深作家。請根據題目、文體與等級撰寫範文。
-【格式要求】：每個段落開頭必須包含兩個全形空格（　　）。
-請直接輸出範文內容。
+MODEL_ESSAY_INSTRUCTION = """
+你是一位榮獲多項文學獎的資深作家與國文名師。
+請根據使用者提供的「題目」、「文體」與「等級」，撰寫一篇高品質的範文。
+
+【嚴格文體規範】：
+1. 記敘文：核心寫人記事，結構要有起因經過結果。
+2. 抒情文：運用感官描寫，文字優美感性。
+3. 議論文：必須包含論點、論據、論證，採三段式或四段式結構。
+
+【格式規範】：
+**重要：** 每個段落的開頭必須「強制」包含兩個全形空格（　　）作為縮排。
+
+輸出格式：
+請直接輸出範文內容，不需要額外的寒暄。
+若題目為空，請自行根據「文體」與「等級」擬定一個適合的經典題目。
 """
 
 # ==========================================
-# 4. 功能函數
+# 3. 狀態管理 (Session State)
 # ==========================================
+# 初始化變數
+if 'credits' not in st.session_state:
+    st.session_state.credits = 10
+if 'page' not in st.session_state:
+    st.session_state.page = 'home'
+if 'grading_result' not in st.session_state:
+    st.session_state.grading_result = None
+if 'model_result' not in st.session_state:
+    st.session_state.model_result = None
 
-def deduct_credit():
-    if st.session_state.credits > 0:
-        st.session_state.credits -= 1
-        return True
-    return False
-
-def refill_credits(password):
-    if password == REFILL_PASSWORD:
-        st.session_state.credits = MAX_CREDITS
-        return True
-    return False
-
-def get_gemini_response(prompt, content, is_image=False):
-    model = genai.GenerativeModel('gemini-1.5-flash') # 使用最新的 flash 模型
-    
-    try:
-        if is_image:
-            response = model.generate_content([prompt, content])
-        else:
-            response = model.generate_content(prompt + "\n\n學生作文：\n" + content)
-        return response.text
-    except Exception as e:
-        return f"發生錯誤：{str(e)}"
+REFILL_PASSWORD = "anxux123"
 
 # ==========================================
-# 5. 介面呈現 (UI)
+# 4. 邏輯函數
 # ==========================================
 
-# 頂部導覽列
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("🪶 文心老師")
-    st.caption("智慧作文批閱系統")
-with col2:
-    st.metric("剩餘墨水", f"{st.session_state.credits} / {MAX_CREDITS}")
-
-# --- 頁面路由 ---
-
-# 1. 首頁 (Home)
-if st.session_state.page == 'home':
-    st.markdown("### 請選擇您的學習模式")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.info("🖊️ **作文批閱**\n\n上傳作文，獲得專業評語。")
-        if st.button("進入批閱模式"):
-            st.session_state.page = 'grading_setup'
-            st.rerun()
-            
-    with c2:
-        st.success("📖 **範文參考**\n\n輸入題目，生成名師範文。")
-        if st.button("進入範文模式"):
-            st.session_state.page = 'model_essay'
-            st.rerun()
-
-    # 補充墨水區
-    if st.session_state.credits == 0:
-        st.warning("⚠️ 墨水已耗盡")
-        
+def call_gemini(prompt, content, is_image=False, system_prompt=""):
+    """呼叫 Gemini API"""
+    try        
